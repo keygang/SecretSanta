@@ -32,6 +32,7 @@ class SecretSanta:
             self.admin = admin
             self.members = [admin]
             self.group_id = group_id
+            self.pairs = None
 
         def __repr__(self):
             return self.__str__()
@@ -95,7 +96,7 @@ class SecretSanta:
                 if message[0] == '/cng':
                     group = self.create_new_group(user, None if len(message) == 1 else message[1])
                     if group is None:
-                        self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID!')
+                        self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
                     else:
                         self.api.sendMessage(chat_id=user_id,
                                              text=f'Новая группа создана. Название: "{group.group_id}"')
@@ -104,7 +105,7 @@ class SecretSanta:
                     try:
                         group = self.groups[message[1]]
                     except:
-                        self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID!')
+                        self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
                         continue
                     self.add_new_member(user, group)
 
@@ -123,8 +124,12 @@ class SecretSanta:
                     if len(message) == 1:
                         self.api.sendMessage(chat_id=user_id, text=self.get_info_user(user))
                     else:
-                        self.api.sendMessage(chat_id=user_id,
-                                             text=self.get_info_group(group=self.groups[message[1]]))
+                        if message[1] in self.groups and user in self.groups[message[1]].members:
+                            self.api.sendMessage(chat_id=user_id,
+                                                 text=self.get_info_group(user, self.groups[message[1]]))
+                        else:
+                            self.api.sendMessage(chat_id=user_id,
+                                                 text=f'Неправильный ID')
             offset = response['result'][-1]['update_id'] + 1
             logger.debug(f'Current state of groups: {self.groups}')
 
@@ -152,26 +157,43 @@ class SecretSanta:
             text += f'\tID: {group.group_id}, Количество участников: {len(group.members)};\n'
         return text
 
-    def get_info_group(self, group):
+    def get_full_user_name(self, user_id):
+        response = self.api.getChat(chat_id=user_id)['result']
+        name = f'{response["first_name"]} {response["last_name"]}'
+        if 'username' in response:
+            name += f' (@{response["username"]})'
+        return name
+
+    def get_info_group(self, user, group):
         text = f'ID: {group.group_id}'
         text += f'\nСписок участников:'
         for i, member in enumerate(group.members):
-            text += f'\n{i + 1}. @{self.api.getChat(chat_id=member.user_id)["result"]["username"]}'
+            text += f'\n{i + 1}. {self.get_full_user_name(member.user_id)}'
+        if user.user_id == group.admin.user_id:
+            text += '\nТекущая жеребьевка:'
+            if group.pairs is None:
+                text += f'\nЖеребьевка еще не была составлена'
+            else:
+                for pair in group.pairs:
+                    text += f'\n{self.get_full_user_name(pair[0])} -> {self.get_full_user_name(pair[1])}'
+
         return text
 
     def who_to_whom(self, group):
         if len(group.members) <= 1:
             return self.api.sendMessage(chat_id=group.admin.user_id,
-                                        text=f'В группе должно быть более двух участников!')
+                                        text=f'В группе должно быть более одного участника!')
         without_gift = group.members.copy()
+        group.pairs = []
         for member in group.members:
             while True:
                 index = random.randint(0, len(without_gift) - 1)
                 if without_gift[index] != member:
                     break
-            self.api.sendMessage(chat_id=member.user_id,
-                                 text=f'Группа {group.group_id}: Вы готовите подарок для \
-                                 @{self.api.getChat(chat_id=without_gift[index].user_id)["result"]["username"]}')
+            group.pairs.append((member, without_gift[index]))
+            text = f'Группа {group.group_id}:' +\
+                   f'Вы готовите подарок для {self.get_full_user_name(without_gift[index].user_id)}'
+            self.api.sendMessage(chat_id=member.user_id, text=text)
             del without_gift[index]
 
 
