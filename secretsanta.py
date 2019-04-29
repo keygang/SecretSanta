@@ -1,5 +1,11 @@
-import telegram
+import json
 import logging
+import sqlite3
+
+import yaml
+
+import telegram
+from response import *
 from utils import *
 
 logger = logging.getLogger('secretsanta')
@@ -27,66 +33,46 @@ class SecretSanta:
 5. /help - Помощь 
 '''
 
-    class Group:
-        def __init__(self, admin, group_id):
-            self.admin = admin
-            self.members = [admin]
-            self.group_id = group_id
-            self.pairs = None
-
-        def __repr__(self):
-            return self.__str__()
-
-        def __str__(self):
-            return f'{{group_id: {self.group_id}, admin_id: {self.admin.user_id}}}'
-
-    class User:
-        def __init__(self, user_id):
-            self.user_id = user_id
-            self.groups = []
-            self.admin_groups = []
-
-        def __repr__(self):
-            return self.__str__()
-
-        def __str__(self):
-            return f'{{user_id: {self.user_id}, admin_groups: {self.admin_groups}, groups: {self.groups}}}'
-
-    def __init__(self, token):
-        self.groups = dict()
-        self.users = dict()
+    def __init__(self, token, database_path):
         self.api = telegram.TelegramAPI(token)
+        self.conn = sqlite3.connect(database_path)
+        self.cursor = self.conn.cursor()
 
-    def create_new_group(self, admin: User, group_id):
+        # self.api.send
+
+        logger.info('SercetSanta created')
+
+    def __del__(self):
+        self.conn.close()
+
+    def create_new_group(self, admin_id, group_id):
         if group_id is None:
             while True:
                 group_id = rand_id()
-                if group_id not in self.groups:
+                self.cursor.execute(f'SELECT * FROM groups WHERE uuid = "{group_id}"')
+                if not self.cursor.fetchall():
                     break
-        if group_id in self.groups:
-            return None
-        group = SecretSanta.Group(admin, group_id)
-        admin.groups.append(group)
-        admin.admin_groups.append(group)
-        self.groups[group_id] = group
-        logger.info(f'Group {group_id} created by user {admin.user_id}')
-        return group
+        try:
+            self.cursor.execute(f'INSERT INTO groups VALUES ("{group_id}", {admin_id})')
+            self.cursor.execute(f'INSERT INTO groups_users VALUES ("{group_id}", {admin_id})')
+            self.conn.commit()
+            return Response(group_id, ResponseCode.OK, f'group "{group_id}" created')
+        except sqlite3.IntegrityError as error:
+            logger.error(error)
+            return Response(None, ResponseCode.INVALID_DATA, f'group "{group_id}" already exists')
+        except Exception as error:
+            return Response(None, ResponseCode.FAILURE, f'unexpected error: {error}; group "{group_id}"')
 
     def start(self):
         offset = 0
         while True:
-            response = self.api.getUpdates(offset=offset, timeout=10)
-            if not len(response['result']):
+            api_response = self.api.getUpdates(offset=offset, timeout=10)
+            if not len(api_response['result']):
                 continue
-            for update in response['result']:
+            for update in api_response['result']:
                 if 'message' not in update or 'text' not in update['message']:
                     continue
                 user_id = update['message']['from']['id']
-                if user_id not in self.users:
-                    user = SecretSanta.User(user_id)
-                    self.users[user_id] = user
-                else:
-                    user = self.users[user_id]
                 message = update['message']['text'].split(' ')
                 # help / start
                 if message[0] in ['/start', '/help']:
@@ -94,113 +80,174 @@ class SecretSanta:
 
                 # create_new_group
                 if message[0] == '/cng':
-                    group = self.create_new_group(user, None if len(message) == 1 else message[1])
-                    if group is None:
-                        self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
+                    response = self.create_new_group(user_id, None if len(message) == 1 else message[1])
+                    if response.code == ResponseCode.OK:
+                        self.api.sendMessage(chat_id=user_id, text=f'Вы создали группу "{response.result}"')
                     else:
-                        self.api.sendMessage(chat_id=user_id,
-                                             text=f'Новая группа создана. Название: "{group.group_id}"')
+                        self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
+                    logger.debug(response.comment)
+
                 # connect_to_group
                 if message[0] == '/ctg':
-                    try:
-                        group = self.groups[message[1]]
-                    except:
-                        self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
-                        continue
-                    self.add_new_member(user, group)
+                    if len(message) == 1:
+                        self.api.sendMessage(chat_id=user_id, text=f'Вы не ввели ID группы')
+                    else:
+                        response = self.add_new_member(user_id, message[1])
+                        if response.code == ResponseCode.OK:
+                            self.api.sendMessage(chat_id=user_id, text=f'Вы добавились в группу "{message[1]}"')
+                        else:
+                            self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
+                        logger.debug(response.comment)
 
                 # who to whom
                 if message[0] == '/wtw':
-                    if len(message) <= 1 or message[1] not in self.groups:
+                    if len(message) == 0:
                         self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
-                        logger.debug(f'User {user_id} enter wrong ID in "who to whom" method')
-                    elif self.groups[message[1]].admin.user_id != user_id:
-                        self.api.sendMessage(chat_id=user_id, text=f'Вы не админ группы "{message[1]}"')
+                        logger.debug(f'user "{user_id}" enter wrong ID in "who to whom" method')
                     else:
-                        self.who_to_whom(self.groups[message[1]])
+                        response = self.who_to_whom(user_id=user_id, group_id=message[1])
+                        if response.code == ResponseCode.OK:
+                            self.api.sendMessage(chat_id=user_id, text=f'Жеребьевка успешно составлена!')
+                            logger.debug(response.comment)
+                        elif response.code == ResponseCode.INVALID_DATA:
+                            self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
+                            logger.debug(response.comment)
+                        elif response.code == ResponseCode.FAILURE:
+                            self.api.sendMessage(chat_id=user_id, text=f'Вы не администратор группы или в группе <= 1 участника')
+                            logger.debug(response.comment)
 
                 # info
                 if message[0] == '/info':
                     if len(message) == 1:
-                        self.api.sendMessage(chat_id=user_id, text=self.get_info_user(user))
+                        response = self.get_info_user(user_id)
+                        self.api.sendMessage(chat_id=user_id, text=response.result)
+                        logger.debug(response.comment)
                     else:
-                        if message[1] in self.groups and user in self.groups[message[1]].members:
-                            self.api.sendMessage(chat_id=user_id,
-                                                 text=self.get_info_group(user, self.groups[message[1]]))
+                        response = self.get_info_group(user_id, message[1])
+                        if response.code == ResponseCode.OK:
+                            self.api.sendMessage(chat_id=user_id, text=response.result)
+                            logger.debug(response.comment)
                         else:
-                            self.api.sendMessage(chat_id=user_id,
-                                                 text=f'Неправильный ID')
-            offset = response['result'][-1]['update_id'] + 1
-            logger.debug(f'Current state of groups: {self.groups}')
+                            self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
+                            logger.debug(response.comment)
+                markup = json.dumps({"keyboard_remove": None, "remove_keyboard": True})
+                response = self.api.sendMessage(chat_id=user_id, text='Hello', reply_markup=markup)
+                print(response)
+            offset = api_response['result'][-1]['update_id'] + 1
+            self.cursor.execute('SELECT * FROM groups')
+            logger.debug(f'Current state of groups: {self.cursor.fetchall()}')
 
-    def add_new_member(self, user: User, group):
-        if user not in group.members:
-            user.groups.append(group)
-            group.members.append(user)
-            response = self.api.getChat(chat_id=user.user_id)
-            name = f'@{response["result"]["username"]}'
-            self.api.sendMessage(chat_id=user.user_id, text=f'Вы добавились в группу "{group.group_id}"!')
-            self.api.sendMessage(chat_id=group.admin.user_id,
-                                 text=f'В группу "{group.group_id}" добавился новый участник - {name}')
-            logger.info(f'User {user.user_id} connected to group {group.group_id}')
-        else:
-            self.api.sendMessage(chat_id=user.user_id, text=f'Вы уже состоите в группе "{group.group_id}"!')
-            logger.debug(f'User {user.user_id} already exists in  group {group.group_id}')
+    def add_new_member(self, user_id, group_id):
+        self.cursor.execute(f'SELECT * FROM groups WHERE uuid = "{group_id}"')
+        response = self.cursor.fetchall()
+        if not response:
+            return Response(None, ResponseCode.INVALID_DATA, f'group_id "{group_id}" not exists')
+        self.cursor.execute(f'SELECT * FROM groups_users WHERE group_id = "{group_id}" AND user_id = {user_id}')
+        response = self.cursor.fetchall()
+        if response:
+            return Response(None, ResponseCode.INVALID_DATA, f'used_id "{user_id}" already in group "{group_id}"')
+        self.cursor.execute(f'INSERT INTO groups_users VALUES ("{group_id}", {user_id})')
+        self.conn.commit()
 
-    @staticmethod
-    def get_info_user(user):
+        self.api.sendMessage(chat_id=user_id, text=f'Вы добавились в группу "{group_id}"!')
+        self.api.sendMessage(chat_id=user_id,
+                             text=f'В группу "{group_id}" добавился новый участник - {self.get_full_user_name(user_id)}')
+
+        return Response(user_id, ResponseCode.OK, f'user "{user_id}" connected to group "{group_id}"')
+
+    def get_info_user(self, user_id):
         text = f'Список групп в которых вы состоите:\n'
-        for group in user.groups:
-            text += f'\tID: {group.group_id}, Количество участников: {len(group.members)};\n'
+        self.cursor.execute(f'SELECT group_id FROM groups_users WHERE user_id = {user_id}')
+
+        for database_tuple in self.cursor.fetchall():
+            group_id = database_tuple[0]
+            self.cursor.execute(f'SELECT * FROM groups_users WHERE group_id = "{group_id}"')
+            text += f'\tID: "{group_id}", Количество участников: {len(self.cursor.fetchall())};\n'
         text += f'Список групп в которых вы админ:\n'
-        for group in user.admin_groups:
-            text += f'\tID: {group.group_id}, Количество участников: {len(group.members)};\n'
-        return text
+        self.cursor.execute(f'SELECT uuid FROM groups WHERE admin_id = {user_id}')
+        for database_tuple in self.cursor.fetchall():
+            group_id = database_tuple[0]
+            self.cursor.execute(f'SELECT * FROM groups_users WHERE group_id = "{group_id}"')
+            text += f'\tID: "{group_id}", Количество участников: {len(self.cursor.fetchall())};\n'
+        logger.debug(f'Get info for user "{user_id}"')
+
+        return Response(text, ResponseCode.OK, f'info gor user "{user_id}" get it')
 
     def get_full_user_name(self, user_id):
         response = self.api.getChat(chat_id=user_id)['result']
         name = f'{response["first_name"]} {response["last_name"]}'
         if 'username' in response:
             name += f' (@{response["username"]})'
+        logger.debug(f'Full name of {user_id} user is {name}')
+
         return name
 
-    def get_info_group(self, user, group):
-        text = f'ID: {group.group_id}'
+    def get_info_group(self, user_id, group_id):
+        self.cursor.execute(f'SELECT admin_id FROM groups WHERE uuid = "{group_id}"')
+        response = self.cursor.fetchall()
+        if not response:
+            return Response(None, ResponseCode.INVALID_DATA, f'group "{group_id}" not exists')
+        text = f'ID: "{group_id}"'
+        admin_id = response[0][0]
+        text += f'\nАдминистратор группы: {self.get_full_user_name(admin_id)}'
         text += f'\nСписок участников:'
-        for i, member in enumerate(group.members):
-            text += f'\n{i + 1}. {self.get_full_user_name(member.user_id)}'
-        if user.user_id == group.admin.user_id:
+        self.cursor.execute(f'SELECT user_id FROM groups_users WHERE group_id = "{group_id}" AND user_id = {user_id}')
+        response = self.cursor.fetchall()
+        if not response != user_id:
+            return Response(None, ResponseCode.FAILURE, f'user "{user_id}" not in group "{group_id}"')
+
+        self.cursor.execute(f'SELECT user_id FROM groups_users WHERE group_id = "{group_id}"')
+        response = self.cursor.fetchall()
+        for i, database_tuple in enumerate(response):
+            member_id = database_tuple[0]
+            text += f'\n{i + 1}. {self.get_full_user_name(member_id)}'
+        if user_id == admin_id:
             text += '\nТекущая жеребьевка:'
-            if group.pairs is None:
+            self.cursor.execute(f'SELECT * FROM pairs WHERE group_id = "{group_id}"')
+            response = self.cursor.fetchall()
+            if not response:
                 text += f'\nЖеребьевка еще не была составлена'
             else:
-                for pair in group.pairs:
+
+                for pair in response:
                     text += f'\n{self.get_full_user_name(pair[0])} -> {self.get_full_user_name(pair[1])}'
 
-        return text
+        return Response(text, ResponseCode.OK, f'user "{user_id}" get it info about group "{group_id}"')
 
-    def who_to_whom(self, group):
-        if len(group.members) <= 1:
-            return self.api.sendMessage(chat_id=group.admin.user_id,
-                                        text=f'В группе должно быть более одного участника!')
-        without_gift = group.members.copy()
-        group.pairs = []
-        for member in group.members:
+    def who_to_whom(self, user_id, group_id):
+        self.cursor.execute(f'SELECT admin_id FROM groups WHERE uuid = "{group_id}"')
+        response = self.cursor.fetchall()
+        if not response:
+            return Response(None, ResponseCode.INVALID_DATA, f'group "{group_id}" not exists')
+        if response[0][0] != user_id:
+            return Response(None, ResponseCode.FAILURE, f'user "{user_id}" not admin of group "{group_id}"')
+        self.cursor.execute(f'SELECT user_id FROM groups_users WHERE group_id = "{group_id}"')
+        response = self.cursor.fetchall()
+        if len(response) <= 1:
+            return Response(None, ResponseCode.FAILURE, f'group "{group_id}" has <= 1 member')
+        members = [user[0] for user in response]
+        without_gift = members.copy()
+        for member in members:
             while True:
                 index = random.randint(0, len(without_gift) - 1)
                 if without_gift[index] != member:
                     break
-            group.pairs.append((member, without_gift[index]))
-            text = f'Группа {group.group_id}:' +\
-                   f'Вы готовите подарок для {self.get_full_user_name(without_gift[index].user_id)}'
-            self.api.sendMessage(chat_id=member.user_id, text=text)
+            # pairs.append((member, without_gift[index]))
+            self.cursor.execute(f'INSERT INTO pairs VALUES ("{group_id}", {member}, {without_gift[index]})')
+            self.conn.commit()
+            #
+            # text = f'Группа {group_id}:' + \
+            #        f'Вы готовите подарок для {self.get_full_user_name(without_gift[index].user_id)}'
+            # self.api.sendMessage(chat_id=member.user_id, text=text)
+            # logger.debug(f'Created toss for group {group}')
             del without_gift[index]
+        return Response(None, ResponseCode.OK, f'user "{user_id}" created "who to whom"')
 
 
 def main():
-    with open('token.txt', 'r') as file:
-        token = file.read()
-    secret_santa = SecretSanta(token)
+    config = yaml.safe_load(open('config.yaml'))
+    token, database_path = config['secretsanta']['telegram-token'], config['secretsanta']['database-path']
+    secret_santa = SecretSanta(token, database_path)
     secret_santa.start()
 
 
