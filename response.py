@@ -7,7 +7,7 @@ class ResponseCode(Enum):
     INVALID_DATA = 3
 
 
-class Respgit onse:
+class Response:
     def __init__(self, result, code, comment=None):
         if comment is None:
             comment = ''

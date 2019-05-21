@@ -25,12 +25,13 @@ class SecretSanta:
 
 Список команд:
 
-1. /cng [ID группы] - Создает новыю группу. Если не указан ID, то ID генерируется рандомным образом.
-2. /ctg ID - Присоединиться к группе ID
-3. /wtw ID - Распределить кто кому дарит подарки из группы ID
-4. /info [ID группы] - Получить информацию о ваших группах. Если указан ID, то ID выводится подробная информация о \
+1. /cng [ID] - Создает новыю группу. Если не указан ID, то ID генерируется рандомным образом.
+2. /dlt ID - Удалить группу ID 
+3. /ctg ID - Присоединиться к группе ID
+4. /wtw ID - Распределить кто кому дарит подарки из группы ID
+5. /info [ID] - Получить информацию о ваших группах. Если указан ID, то ID выводится подробная информация о \
 группе.
-5. /help - Помощь 
+6. /help - Помощь
 '''
 
     def __init__(self, token, database_path):
@@ -101,7 +102,7 @@ class SecretSanta:
 
                 # who to whom
                 if message[0] == '/wtw':
-                    if len(message) == 0:
+                    if len(message) == 1:
                         self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
                         logger.debug(f'user "{user_id}" enter wrong ID in "who to whom" method')
                     else:
@@ -113,7 +114,8 @@ class SecretSanta:
                             self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
                             logger.debug(response.comment)
                         elif response.code == ResponseCode.FAILURE:
-                            self.api.sendMessage(chat_id=user_id, text=f'Вы не администратор группы или в группе <= 1 участника')
+                            self.api.sendMessage(chat_id=user_id,
+                                                 text=f'Вы не администратор группы или в группе <= 1 участника')
                             logger.debug(response.comment)
 
                 # info
@@ -130,9 +132,22 @@ class SecretSanta:
                         else:
                             self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
                             logger.debug(response.comment)
-                markup = json.dumps({"keyboard_remove": None, "remove_keyboard": True})
-                response = self.api.sendMessage(chat_id=user_id, text='Hello', reply_markup=markup)
-                print(response)
+
+                # delete group
+                if message[0] == '/dlt':
+                    if len(message) == 1:
+                        self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
+                        logger.debug(f'user "{user_id}" enter wrong ID in "delete" method')
+                    else:
+                        response = self.delete_group(user_id, message[1])
+                        if response.code == ResponseCode.OK:
+                            self.api.sendMessage(chat_id=user_id, text=f'Вы удалили группу "{message[1]}"')
+                            logger.debug(response.comment)
+                        else:
+                            self.api.sendMessage(chat_id=user_id,
+                                                 text=f'Вы не администратор группы или в группе <= 1 участника')
+                            logger.debug(response.comment)
+
             offset = api_response['result'][-1]['update_id'] + 1
             self.cursor.execute('SELECT * FROM groups')
             logger.debug(f'Current state of groups: {self.cursor.fetchall()}')
@@ -208,19 +223,25 @@ class SecretSanta:
             if not response:
                 text += f'\nЖеребьевка еще не была составлена'
             else:
-
                 for pair in response:
                     text += f'\n{self.get_full_user_name(pair[0])} -> {self.get_full_user_name(pair[1])}'
 
         return Response(text, ResponseCode.OK, f'user "{user_id}" get it info about group "{group_id}"')
 
-    def who_to_whom(self, user_id, group_id):
+    def is_admin(self, user_id, group_id):
         self.cursor.execute(f'SELECT admin_id FROM groups WHERE uuid = "{group_id}"')
         response = self.cursor.fetchall()
         if not response:
             return Response(None, ResponseCode.INVALID_DATA, f'group "{group_id}" not exists')
         if response[0][0] != user_id:
             return Response(None, ResponseCode.FAILURE, f'user "{user_id}" not admin of group "{group_id}"')
+        return Response(None, ResponseCode.OK, f'user "{user_id}" is admin of group "{group_id}"')
+
+    def who_to_whom(self, user_id, group_id):
+        response = self.is_admin(user_id, group_id)
+        if response.result != ResponseCode.OK:
+            return response
+        self.cursor.execute(f'DELETE FROM pairs WHERE group_id = "{group_id}"')
         self.cursor.execute(f'SELECT user_id FROM groups_users WHERE group_id = "{group_id}"')
         response = self.cursor.fetchall()
         if len(response) <= 1:
@@ -232,16 +253,23 @@ class SecretSanta:
                 index = random.randint(0, len(without_gift) - 1)
                 if without_gift[index] != member:
                     break
-            # pairs.append((member, without_gift[index]))
             self.cursor.execute(f'INSERT INTO pairs VALUES ("{group_id}", {member}, {without_gift[index]})')
-            self.conn.commit()
-            #
-            # text = f'Группа {group_id}:' + \
-            #        f'Вы готовите подарок для {self.get_full_user_name(without_gift[index].user_id)}'
-            # self.api.sendMessage(chat_id=member.user_id, text=text)
-            # logger.debug(f'Created toss for group {group}')
+            text = f'Группа {group_id}:' + \
+                   f'Вы готовите подарок для {self.get_full_user_name(without_gift[index].user_id)}'
+            self.api.sendMessage(chat_id=member.user_id, text=text)
             del without_gift[index]
+        self.conn.commit()
         return Response(None, ResponseCode.OK, f'user "{user_id}" created "who to whom"')
+
+    def delete_group(self, user_id, group_id):
+        response = self.is_admin(user_id, group_id)
+        if response.code != ResponseCode.OK:
+            return response
+        self.cursor.execute(f'DELETE FROM groups WHERE uuid = "{group_id}"')
+        self.cursor.execute(f'DELETE FROM groups_users WHERE group_id = "{group_id}"')
+        self.cursor.execute(f'DELETE FROM pairs WHERE group_id = "{group_id}"')
+        self.conn.commit()
+        return Response(None, ResponseCode.OK, f'user "{user_id}" delete group "{group_id}"')
 
 
 def main():
