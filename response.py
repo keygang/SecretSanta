@@ -14,3 +14,6 @@ class Response:
         self.result = result
         self.code = code
         self.comment = comment
+
+    def __str__(self):
+        return f'{{result: {self.result}; code: {self.code}; comment: {self.comment}}}'

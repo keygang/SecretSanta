@@ -108,7 +108,6 @@ class SecretSanta:
                     else:
                         response = self.who_to_whom(user_id=user_id, group_id=message[1])
                         if response.code == ResponseCode.OK:
-                            self.api.sendMessage(chat_id=user_id, text=f'Жеребьевка успешно составлена!')
                             logger.debug(response.comment)
                         elif response.code == ResponseCode.INVALID_DATA:
                             self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
@@ -156,19 +155,18 @@ class SecretSanta:
             logger.debug(f'Current state of groups: {self.cursor.fetchall()}')
 
     def add_new_member(self, user_id, group_id):
-        self.cursor.execute(f'SELECT * FROM groups WHERE uuid = "{group_id}"')
+        self.cursor.execute(f'SELECT admin_id FROM groups WHERE uuid = "{group_id}"')
         response = self.cursor.fetchall()
         if not response:
             return Response(None, ResponseCode.INVALID_DATA, f'group_id "{group_id}" not exists')
+        admin_id = response[0][0]
         self.cursor.execute(f'SELECT * FROM groups_users WHERE group_id = "{group_id}" AND user_id = {user_id}')
         response = self.cursor.fetchall()
         if response:
             return Response(None, ResponseCode.INVALID_DATA, f'used_id "{user_id}" already in group "{group_id}"')
         self.cursor.execute(f'INSERT INTO groups_users VALUES ("{group_id}", {user_id})')
         self.conn.commit()
-
-        self.api.sendMessage(chat_id=user_id, text=f'Вы добавились в группу "{group_id}"!')
-        self.api.sendMessage(chat_id=user_id,
+        self.api.sendMessage(chat_id=admin_id,
                              text=f'В группу "{group_id}" добавился новый участник - {self.get_full_user_name(user_id)}')
 
         return Response(user_id, ResponseCode.OK, f'user "{user_id}" connected to group "{group_id}"')
@@ -192,7 +190,10 @@ class SecretSanta:
         return Response(text, ResponseCode.OK, f'info gor user "{user_id}" get it')
 
     def get_full_user_name(self, user_id):
-        response = self.api.getChat(chat_id=user_id)['result']
+        print(user_id)
+        response = self.api.getChat(chat_id=user_id)
+        print(response)
+        response = response['result']
         name = f'{response["first_name"]} {response["last_name"]}'
         if 'username' in response:
             name += f' (@{response["username"]})'
@@ -221,7 +222,7 @@ class SecretSanta:
             text += f'\n{i + 1}. {self.get_full_user_name(member_id)}'
         if user_id == admin_id:
             text += '\nТекущая жеребьевка:'
-            self.cursor.execute(f'SELECT * FROM pairs WHERE group_id = "{group_id}"')
+            self.cursor.execute(f'SELECT from_id, to_id FROM pairs WHERE group_id = "{group_id}"')
             response = self.cursor.fetchall()
             if not response:
                 text += f'\nЖеребьевка еще не была составлена'
@@ -241,8 +242,8 @@ class SecretSanta:
         return Response(None, ResponseCode.OK, f'user "{user_id}" is admin of group "{group_id}"')
 
     def who_to_whom(self, user_id, group_id):
-        response = self.is_admin(user_id, group_id)
-        if response.result != ResponseCode.OK:
+        response = self.is_admin(user_id, group_id)['result']
+        if response.code != ResponseCode.OK:
             return response
         self.cursor.execute(f'DELETE FROM pairs WHERE group_id = "{group_id}"')
         self.cursor.execute(f'SELECT user_id FROM groups_users WHERE group_id = "{group_id}"')
@@ -257,9 +258,9 @@ class SecretSanta:
                 if without_gift[index] != member:
                     break
             self.cursor.execute(f'INSERT INTO pairs VALUES ("{group_id}", {member}, {without_gift[index]})')
-            text = f'Группа {group_id}:' + \
-                   f'Вы готовите подарок для {self.get_full_user_name(without_gift[index].user_id)}'
-            self.api.sendMessage(chat_id=member.user_id, text=text)
+            text = f'Группа "{group_id}": ' + \
+                   f'Вы готовите подарок для {self.get_full_user_name(without_gift[index])}'
+            self.api.sendMessage(chat_id=member, text=text)
             del without_gift[index]
         self.conn.commit()
         return Response(None, ResponseCode.OK, f'user "{user_id}" created "who to whom"')
