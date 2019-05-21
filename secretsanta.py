@@ -67,7 +67,7 @@ class SecretSanta:
     def start(self):
         offset = 0
         while True:
-            api_response = self.api.getUpdates(offset=offset, timeout=10)
+            api_response = self.api.getUpdates(offset=offset, timeout=20)
             if not len(api_response['result']):
                 continue
             for update in api_response['result']:
@@ -80,7 +80,7 @@ class SecretSanta:
                     self.api.sendMessage(chat_id=user_id, text=SecretSanta.help)
 
                 # create_new_group
-                if message[0] == '/cng':
+                elif message[0] == '/cng':
                     response = self.create_new_group(user_id, None if len(message) == 1 else message[1])
                     if response.code == ResponseCode.OK:
                         self.api.sendMessage(chat_id=user_id, text=f'Вы создали группу "{response.result}"')
@@ -89,7 +89,7 @@ class SecretSanta:
                     logger.debug(response.comment)
 
                 # connect_to_group
-                if message[0] == '/ctg':
+                elif message[0] == '/ctg':
                     if len(message) == 1:
                         self.api.sendMessage(chat_id=user_id, text=f'Вы не ввели ID группы')
                     else:
@@ -101,7 +101,7 @@ class SecretSanta:
                         logger.debug(response.comment)
 
                 # who to whom
-                if message[0] == '/wtw':
+                elif message[0] == '/wtw':
                     if len(message) == 1:
                         self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
                         logger.debug(f'user "{user_id}" enter wrong ID in "who to whom" method')
@@ -119,7 +119,7 @@ class SecretSanta:
                             logger.debug(response.comment)
 
                 # info
-                if message[0] == '/info':
+                elif message[0] == '/info':
                     if len(message) == 1:
                         response = self.get_info_user(user_id)
                         self.api.sendMessage(chat_id=user_id, text=response.result)
@@ -134,7 +134,7 @@ class SecretSanta:
                             logger.debug(response.comment)
 
                 # delete group
-                if message[0] == '/dlt':
+                elif message[0] == '/dlt':
                     if len(message) == 1:
                         self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
                         logger.debug(f'user "{user_id}" enter wrong ID in "delete" method')
@@ -147,6 +147,9 @@ class SecretSanta:
                             self.api.sendMessage(chat_id=user_id,
                                                  text=f'Вы не администратор группы или в группе <= 1 участника')
                             logger.debug(response.comment)
+
+                else:
+                    self.api.sendMessage(chat_id=user_id, text=f'Попутал че?')
 
             offset = api_response['result'][-1]['update_id'] + 1
             self.cursor.execute('SELECT * FROM groups')
