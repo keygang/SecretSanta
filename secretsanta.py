@@ -35,7 +35,8 @@ class SecretSanta:
 6. /help - Помощь
 '''
 
-    def __init__(self, token, database_path):
+    def __init__(self, token, database_path, admins):
+        self.admins = admins
         self.api = telegram.TelegramAPI(token)
         self.conn = sqlite3.connect(database_path)
         self.cursor = self.conn.cursor()
@@ -76,6 +77,8 @@ class SecretSanta:
                     continue
                 user_id = update['message']['from']['id']
                 message = update['message']['text'].split(' ')
+                logger.debug(f'user "{user_id}": {message}')
+
                 # help / start
                 if message[0] in ['/start', '/help']:
                     self.api.sendMessage(chat_id=user_id, text=SecretSanta.help)
@@ -143,10 +146,22 @@ class SecretSanta:
                         if response.code == ResponseCode.OK:
                             self.api.sendMessage(chat_id=user_id, text=f'Вы удалили группу "{message[1]}"')
                             logger.debug(response.comment)
-                        else:
-                            self.api.sendMessage(chat_id=user_id,
-                                                 text=f'Вы не администратор группы или в группе <= 1 участника')
+                        elif response.code == ResponseCode.INVALID_DATA:
+                            self.api.sendMessage(chat_id=user_id, text=f'Неправильный ID')
                             logger.debug(response.comment)
+                        elif response.code == ResponseCode.FAILURE:
+                            self.api.sendMessage(chat_id=user_id,
+                                                 text=f'Вы не администратор группы')
+                            logger.debug(response.comment)
+
+                elif message[0] == '/ag':
+                    response = self.get_all_groups(user_id)
+                    if response.code == ResponseCode.OK:
+                        self.api.sendMessage(chat_id=user_id,
+                                             text=response.result)
+                    else:
+                        self.api.sendMessage(chat_id=user_id,
+                                             text=f'Эээээ, куда полез?')
 
                 else:
                     self.api.sendMessage(chat_id=user_id, text=f'Попутал че?')
@@ -191,9 +206,7 @@ class SecretSanta:
         return Response(text, ResponseCode.OK, f'info gor user "{user_id}" get it')
 
     def get_full_user_name(self, user_id):
-        print(user_id)
         response = self.api.getChat(chat_id=user_id)
-        print(response)
         response = response['result']
         name = f'{response["first_name"]} {response["last_name"]}'
         if 'username' in response:
@@ -238,7 +251,7 @@ class SecretSanta:
         response = self.cursor.fetchall()
         if not response:
             return Response(None, ResponseCode.INVALID_DATA, f'group "{group_id}" not exists')
-        if response[0][0] != user_id:
+        if user_id not in [response[0][0]] + self.admins:
             return Response(None, ResponseCode.FAILURE, f'user "{user_id}" not admin of group "{group_id}"')
         return Response(None, ResponseCode.OK, f'user "{user_id}" is admin of group "{group_id}"')
 
@@ -276,11 +289,26 @@ class SecretSanta:
         self.conn.commit()
         return Response(None, ResponseCode.OK, f'user "{user_id}" delete group "{group_id}"')
 
+    def get_all_groups(self, user_id):
+        if user_id in self.admins:
+            text = f'Список групп:\n'
+            self.cursor.execute(f'SELECT uuid, admin_id FROM groups')
+
+            for database_tuple in self.cursor.fetchall():
+                group_id = database_tuple[0]
+                admin_id = database_tuple[1]
+                self.cursor.execute(f'SELECT * FROM groups_users WHERE group_id = "{group_id}"')
+                text += f'\tID: "{group_id}"; ADMIN: {self.get_full_user_name(admin_id)};\n\t\t' \
+                    f'Количество участников: {len(self.cursor.fetchall())};\n'
+            return Response(text, ResponseCode.OK, f'user "{user_id}" get info about all groups')
+        return Response(None, ResponseCode.FAILURE, f'user "{user_id}" isn\'t admin')
+
 
 def main():
     config = yaml.safe_load(open('config.yaml'))
     token, database_path = config['secretsanta']['telegram-token'], config['secretsanta']['database-path']
-    secret_santa = SecretSanta(token, database_path)
+    admins = config['secretsanta']['admins']
+    secret_santa = SecretSanta(token, database_path, admins)
     secret_santa.start()
 
 
