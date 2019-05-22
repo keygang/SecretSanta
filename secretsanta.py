@@ -243,7 +243,7 @@ class SecretSanta:
         return Response(None, ResponseCode.OK, f'user "{user_id}" is admin of group "{group_id}"')
 
     def who_to_whom(self, user_id, group_id):
-        response = self.is_admin(user_id, group_id)['result']
+        response = self.is_admin(user_id, group_id)
         if response.code != ResponseCode.OK:
             return response
         self.cursor.execute(f'DELETE FROM pairs WHERE group_id = "{group_id}"')
